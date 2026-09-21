@@ -1,0 +1,57 @@
+[
+  {
+    "name": "高风险月付客户完整方案",
+    "task": "请为客户 7590-VHVEG 分析流失风险，并结合演示政策和可用优惠生成完整挽留方案。",
+    "expected_risk_level": "高风险",
+    "expected_tools": [
+      "get_customer_profile",
+      "predict_churn_risk",
+      "search_retention_policy",
+      "calculate_retention_offer"
+    ]
+  },
+  {
+    "name": "低风险一年合同客户完整方案",
+    "task": "运营人员准备回访 5575-GNVDE，请查询资料、判断风险、查找政策并计算演示优惠，最后给出结构化建议。",
+    "expected_risk_level": "低风险",
+    "expected_tools": [
+      "get_customer_profile",
+      "predict_churn_risk",
+      "search_retention_policy",
+      "calculate_retention_offer"
+    ]
+  },
+  {
+    "name": "低风险月付客户完整方案",
+    "task": "客服需要处理客户 3668-QPYBK，请基于现有客户数据、模型和知识库准备完整的挽留分析。",
+    "expected_risk_level": "低风险",
+    "expected_tools": [
+      "get_customer_profile",
+      "predict_churn_risk",
+      "search_retention_policy",
+      "calculate_retention_offer"
+    ]
+  },
+  {
+    "name": "另一高风险客户完整方案",
+    "task": "针对 9237-HQITU 做一次完整客户运营评估，需要风险概率、政策证据、允许的演示优惠和沟通话术。",
+    "expected_risk_level": "高风险",
+    "expected_tools": [
+      "get_customer_profile",
+      "predict_churn_risk",
+      "search_retention_policy",
+      "calculate_retention_offer"
+    ]
+  },
+  {
+    "name": "中风险高月费客户完整方案",
+    "task": "请分析客户 8012-SOUDQ，并输出有数据、有政策来源、有确定性优惠计算的结构化挽留方案。",
+    "expected_risk_level": "中风险",
+    "expected_tools": [
+      "get_customer_profile",
+      "predict_churn_risk",
+      "search_retention_policy",
+      "calculate_retention_offer"
+    ]
+  }
+]

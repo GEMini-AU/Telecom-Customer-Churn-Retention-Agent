@@ -1,0 +1,28 @@
+# Python 运行时自动生成的字节码缓存
+__pycache__/
+*.pyc
+
+# 项目本地虚拟环境；其中的第三方库可以通过 requirements.txt 重新安装
+.venv/
+
+# Jupyter Notebook 自动生成的临时检查点
+.ipynb_checkpoints/
+
+# 本地 API Key 配置，绝对不能提交到 Git 仓库
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+
+# 本地 RAG 持久化索引，可由知识文档随时重新构建
+storage/rag/*.joblib
+
+# 单 Agent 人工确认与拒绝的本地审计数据
+storage/audit/*.jsonl
+storage/audit/*.sqlite3
+storage/audit/*.sqlite3-wal
+storage/audit/*.sqlite3-shm
+
+# 本地简历成品与生成过程文件，不属于当前项目仓库
+output/resume/
+tmp/

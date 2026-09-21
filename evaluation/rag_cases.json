@@ -1,0 +1,30 @@
+[
+  {
+    "question": "月付合同和一年合同分别代表什么？合同可以自动变更吗？",
+    "expected_sources": ["knowledge/demo_telecom/contract_types.md"]
+  },
+  {
+    "question": "DSL、光纤和没有互联网服务在项目里如何区分？",
+    "expected_sources": ["knowledge/demo_telecom/network_services.md"]
+  },
+  {
+    "question": "未开通技术支持的客户遇到网络问题时应如何处理？",
+    "expected_sources": ["knowledge/demo_telecom/tech_support.md"]
+  },
+  {
+    "question": "客户投诉账单金额异常时应该如何处理？",
+    "expected_sources": ["knowledge/demo_telecom/complaint_handling.md"]
+  },
+  {
+    "question": "高风险客户的演示挽留政策是什么？",
+    "expected_sources": ["knowledge/demo_telecom/retention_policies.md"]
+  },
+  {
+    "question": "演示优惠是否可以叠加并承诺永久有效？",
+    "expected_sources": ["knowledge/demo_telecom/offer_restrictions.md"]
+  },
+  {
+    "question": "火星量子通信卫星的轨道参数是多少？",
+    "expected_sources": []
+  }
+]

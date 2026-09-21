@@ -1,0 +1,92 @@
+[
+  {
+    "id": "AC-001",
+    "category": "正确客户查询",
+    "description": "查询公开演示数据中的客户 7590-VHVEG",
+    "expected": "返回客户及19个模型字段，不返回Churn标签"
+  },
+  {
+    "id": "AC-002",
+    "category": "客户不存在",
+    "description": "查询不存在的客户 0000-AAAAA",
+    "expected": "返回 CUSTOMER_NOT_FOUND"
+  },
+  {
+    "id": "AC-003",
+    "category": "高风险",
+    "description": "使用现有Pipeline预测客户 7590-VHVEG",
+    "expected": "风险等级为高风险"
+  },
+  {
+    "id": "AC-004",
+    "category": "中风险",
+    "description": "使用现有Pipeline预测客户 8012-SOUDQ",
+    "expected": "风险等级为中风险"
+  },
+  {
+    "id": "AC-005",
+    "category": "低风险",
+    "description": "使用现有Pipeline预测客户 5575-GNVDE",
+    "expected": "风险等级为低风险"
+  },
+  {
+    "id": "AC-006",
+    "category": "正确调用预测工具",
+    "description": "完整Agent任务必须选择 predict_churn_risk",
+    "expected": "工具记录包含预测工具且调用成功"
+  },
+  {
+    "id": "AC-007",
+    "category": "正确检索政策",
+    "description": "检索高风险客户演示挽留政策",
+    "expected": "命中 retention_policies.md 并保留来源和片段"
+  },
+  {
+    "id": "AC-008",
+    "category": "没有知识依据",
+    "description": "询问火星量子通信卫星轨道参数",
+    "expected": "无证据，不返回编造片段"
+  },
+  {
+    "id": "AC-009",
+    "category": "优惠规则下边界",
+    "description": "中风险月付客户月消费74.99",
+    "expected": "选择 MEDIUM_M2M_STANDARD"
+  },
+  {
+    "id": "AC-010",
+    "category": "优惠规则上边界",
+    "description": "中风险月付客户月消费75.00",
+    "expected": "选择 MEDIUM_M2M_HIGH_USAGE"
+  },
+  {
+    "id": "AC-011",
+    "category": "工具异常",
+    "description": "底层RAG检索器抛出异常",
+    "expected": "返回 KNOWLEDGE_RETRIEVAL_ERROR"
+  },
+  {
+    "id": "AC-012",
+    "category": "人工确认",
+    "description": "确认方案并写入临时审计日志",
+    "expected": "记录 confirmed_execution、时间、客户ID和摘要"
+  },
+  {
+    "id": "AC-013",
+    "category": "人工拒绝",
+    "description": "拒绝方案并写入临时审计日志",
+    "expected": "记录 rejected 且不标记执行"
+  },
+  {
+    "id": "AC-014",
+    "category": "Agent工具链",
+    "description": "完整自然语言任务选择四个注册工具",
+    "expected": "查询、预测、检索、优惠工具按依赖顺序成功执行"
+  },
+  {
+    "id": "AC-015",
+    "category": "循环保护",
+    "description": "模型重复请求工具超过上限",
+    "expected": "返回 MAX_TOOL_CALLS_EXCEEDED"
+  }
+]
