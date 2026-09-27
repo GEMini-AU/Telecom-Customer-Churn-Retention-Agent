@@ -1,4 +1,14 @@
-"""Deterministic demo-offer calculator; no language model is involved."""
+# ============================================================================
+# 文件职责：使用普通 Python 演示规则，确定性计算单一客户允许的优惠方案。
+# 主要调用方：agent/registry.py 的 calculate_retention_offer 工具适配器。
+# 输入/输出：输入风险等级、合同类型、月费；输出 OfferCalculationOutput。
+# 不负责：不调用大模型、不自行修改规则金额，也不代表真实运营商审批。
+# ============================================================================
+"""确定性的演示优惠计算工具。
+
+调用链：预测得到风险等级且客户资料已查到后，Agent 调用本工具。
+输入仅为风险等级、合同和月费；输出是固定 Python 规则算出的优惠，模型不能改写金额。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +22,7 @@ from .schemas import (
 )
 
 
+# 所有金额来自项目演示规则，固定使用 Decimal 计算，不能由大模型自由编造。
 DEMO_POLICY_DISCLAIMER = (
     "本方案仅为项目演示规则，不是真实运营商优惠或审批结果；"
     "执行前必须由人工核验资格、成本和授权。"
@@ -21,6 +32,7 @@ MONEY_STEP = Decimal("0.01")
 
 @dataclass(frozen=True)
 class _OfferRule:
+    """一条内部优惠规则；数据类仅保存规则参数，不执行计算。"""
     code: str
     name: str
     rate: Decimal
@@ -30,9 +42,11 @@ class _OfferRule:
 
 
 class OfferCalculationTool:
-    """Select one non-stackable offer from explicit Python rules."""
+    """选择一条不可叠加规则，计算月优惠与总优惠并返回方案。"""
 
     def run(self, request: OfferCalculationInput) -> OfferCalculationOutput:
+        """根据校验后的输入计算金额；输出始终附带演示政策和人工审批声明。"""
+        # 先选规则，再按月费比例和封顶金额计算；全过程是确定性的 Python 逻辑。
         rule = _select_rule(request)
         calculated_discount = request.monthly_charges * rule.rate
         monthly_discount = min(calculated_discount, rule.monthly_cap).quantize(
@@ -60,6 +74,8 @@ class OfferCalculationTool:
 
 
 def _select_rule(request: OfferCalculationInput) -> _OfferRule:
+    """按风险优先、再按合同与月费选择唯一的演示规则。"""
+    # 规则只依赖风险等级、合同类型和月消费，优先保证不同输入得到可复现的同一结果。
     if request.risk_level == "低风险":
         return _OfferRule(
             code="CARE_ONLY",

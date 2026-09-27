@@ -23,6 +23,24 @@ storage/audit/*.sqlite3
 storage/audit/*.sqlite3-wal
 storage/audit/*.sqlite3-shm
 
+# 手工创建的演示客户与训练 CSV 分离；可能包含用户输入，不提交到 Git。
+storage/customers/*.sqlite3
+storage/customers/*.sqlite3-wal
+storage/customers/*.sqlite3-shm
+
 # 本地简历成品与生成过程文件，不属于当前项目仓库
 output/resume/
 tmp/
+
+# 本地求职、学习及软件著作权申请资料
+docs/interview*
+docs/INTERVIEW*
+docs/resume*
+docs/learning*
+docs/LEARNING*
+docs/upgrade_plan.md
+docs/review_findings.md
+软件著作权申请资料/
+
+# 浏览器自动化产生的本地会话与截图
+.playwright-cli/

@@ -1,13 +1,23 @@
-"""Domain exceptions for the independent RAG module."""
+# ============================================================================
+# 文件职责：定义 RAG 建库和检索阶段的专用异常类型。
+# 主要调用方：rag/service.py、rag/vector_store.py 及其调用方。
+# 输入/输出：输入故障消息；输出可被上层按阶段识别的异常对象。
+# 不负责：不做错误恢复，也不向用户页面直接渲染提示。
+# ============================================================================
+"""独立 RAG 模块的领域异常。
+
+索引构建/加载失败使用 ``RagIndexError``，检索阶段失败使用 ``RagRetrievalError``；
+服务层据此决定重建、拒答或向调用方展示可理解的错误。
+"""
 
 
 class RagError(RuntimeError):
-    """Base exception for recoverable RAG failures."""
+    """RAG 可恢复故障的父类，便于上层统一捕获。"""
 
 
 class RagIndexError(RagError):
-    """Raised when a persisted index is invalid or cannot be written."""
+    """持久化索引无法读取、验证或写入时抛出。"""
 
 
 class RagRetrievalError(RagError):
-    """Raised when the retrieval pipeline cannot return reliable evidence."""
+    """问题向量化或相似度检索无法可靠完成时抛出。"""

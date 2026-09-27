@@ -26,5 +26,41 @@
   {
     "question": "火星量子通信卫星的轨道参数是多少？",
     "expected_sources": []
+  },
+  {
+    "question": "两年合同的演示说明在哪里，能否擅自替客户变更合同？",
+    "expected_sources": ["knowledge/demo_telecom/contract_types.md"]
+  },
+  {
+    "question": "光纤服务客户对速度、稳定性有疑问时，应核对套餐、设备、覆盖和故障记录吗？",
+    "expected_sources": ["knowledge/demo_telecom/network_services.md", "knowledge/demo_telecom/complaint_handling.md"]
+  },
+  {
+    "question": "中风险客户适用什么演示挽留流程？",
+    "expected_sources": ["knowledge/demo_telecom/retention_policies.md"]
+  },
+  {
+    "question": "低风险客户应该直接承诺永久优惠吗？",
+    "expected_sources": ["knowledge/demo_telecom/retention_policies.md", "knowledge/demo_telecom/offer_restrictions.md"]
+  },
+  {
+    "question": "演示优惠能否叠加？资格核验有什么要求？",
+    "expected_sources": ["knowledge/demo_telecom/offer_restrictions.md"]
+  },
+  {
+    "question": "明天首尔的天气和股价是多少？",
+    "expected_sources": []
+  },
+  {
+    "question": "光纤客户反映网速不稳定时应先核查什么？",
+    "expected_sources": ["knowledge/demo_telecom/network_services.md"]
+  },
+  {
+    "question": "网络很卡，要先排查哪些？",
+    "expected_sources": ["knowledge/demo_telecom/complaint_handling.md", "knowledge/demo_telecom/network_services.md"]
+  },
+  {
+    "question": "光纤股票明天价格是多少？",
+    "expected_sources": []
   }
 ]

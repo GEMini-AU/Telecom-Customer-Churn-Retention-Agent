@@ -1,4 +1,14 @@
-"""DeepSeek client built on the installed OpenAI-compatible SDK."""
+# ============================================================================
+# 文件职责：从环境变量读取 DeepSeek 配置，并通过 OpenAI 兼容 SDK 获取结构化挽留建议。
+# 主要调用方：旧页面/独立测试；Agent 自己只复用其中的 DeepSeekSettings。
+# 输入/输出：输入环境变量和 CustomerRiskContext；输出 RetentionAdvice 或配置/响应异常。
+# 不负责：不训练流失模型、不决定真实优惠、不检索电信知识库。
+# ============================================================================
+"""独立的 DeepSeek 大模型客户端。
+
+调用者可以是旧页面或独立脚本；它负责“环境变量配置 -> OpenAI 兼容请求 ->
+Pydantic 结构校验”。它不查询客户、不预测流失、不检索政策，也不计算优惠。
+"""
 
 from __future__ import annotations
 
@@ -13,21 +23,25 @@ from pydantic import ValidationError
 from .schemas import CustomerRiskContext, RetentionAdvice
 
 
+# 默认值只提供连接参数；真实 API Key 必须由环境变量提供，不能写入源码。
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
 
 
 class DeepSeekConfigurationError(RuntimeError):
-    """Raised when required DeepSeek environment configuration is missing."""
+    """环境变量缺失或格式非法时抛出；请求尚未发送。"""
 
 
 class DeepSeekResponseError(RuntimeError):
-    """Raised when DeepSeek returns empty or schema-invalid content."""
+    """远端返回空内容或不符合 ``RetentionAdvice`` 时抛出。"""
 
 
 @dataclass(frozen=True)
 class DeepSeekSettings:
-    """Environment-backed settings for the DeepSeek compatible endpoint."""
+    """从环境变量读取的不可变连接配置。
+
+    ``frozen=True`` 表示实例创建后不能修改，避免同一进程中 API 地址或超时被意外改写。
+    """
 
     api_key: str
     model: str = DEFAULT_DEEPSEEK_MODEL
@@ -36,6 +50,8 @@ class DeepSeekSettings:
 
     @classmethod
     def from_env(cls) -> "DeepSeekSettings":
+        """读取并校验环境变量，成功返回配置对象，失败抛配置异常。"""
+        # 在发起任何请求前完成读取和校验，让配置错误尽早、明确地暴露。
         api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
         if not api_key:
             raise DeepSeekConfigurationError(
@@ -47,6 +63,7 @@ class DeepSeekSettings:
             "DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL
         ).strip()
         timeout_text = os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60").strip()
+        # 环境变量都是字符串，超时需要显式转换为 float。
         try:
             timeout_seconds = float(timeout_text)
         except ValueError as error:
@@ -63,6 +80,7 @@ class DeepSeekSettings:
                 "DEEPSEEK_TIMEOUT_SECONDS 必须大于 0。"
             )
 
+        # rstrip('/') 避免 base_url 与 SDK 拼接路径时出现双斜杠。
         return cls(
             api_key=api_key,
             model=model,
@@ -72,13 +90,18 @@ class DeepSeekSettings:
 
 
 class DeepSeekRetentionClient:
-    """Generate validated retention advice without coupling to Streamlit."""
+    """调用 DeepSeek 生成建议文本，但不依赖 Streamlit 页面。
+
+    输入必须是已确认的 ``CustomerRiskContext``；输出必须通过 ``RetentionAdvice`` 校验。
+    """
 
     def __init__(
         self,
         settings: DeepSeekSettings | None = None,
         openai_client: Any | None = None,
     ) -> None:
+        """使用给定配置或环境变量创建 OpenAI 兼容客户端；测试可注入假客户端。"""
+        # 可注入 OpenAI 兼容客户端，便于离线测试而无需真实密钥或网络。
         self.settings = settings or DeepSeekSettings.from_env()
         self._client = openai_client or OpenAI(
             api_key=self.settings.api_key,
@@ -91,8 +114,9 @@ class DeepSeekRetentionClient:
         self,
         context: CustomerRiskContext,
     ) -> RetentionAdvice:
-        """Call DeepSeek and return schema-validated retention advice."""
+        """调用模型并校验 JSON；风险等级与原因最终以输入事实强制覆盖。"""
 
+        # 要求 JSON 输出；模型只补充建议和话术，风险等级与原因仍以后续强制覆盖为准。
         response = self._client.chat.completions.create(
             model=self.settings.model,
             messages=[
@@ -114,9 +138,11 @@ class DeepSeekRetentionClient:
             temperature=0.2,
         )
 
+        # SDK 返回候选列表；空列表代表没有可解析的模型回复。
         if not response.choices:
             raise DeepSeekResponseError("DeepSeek 没有返回候选结果。")
 
+        # 只取首个候选的文本内容；后续不能直接信任，仍要经 Pydantic 校验。
         content = response.choices[0].message.content
         if not content or not content.strip():
             raise DeepSeekResponseError("DeepSeek 返回了空内容。")
@@ -128,6 +154,7 @@ class DeepSeekRetentionClient:
                 "DeepSeek 返回内容不符合 RetentionAdvice 结构。"
             ) from error
 
+        # 防止模型改写模型/规则已确认的风险事实。
         return advice.model_copy(
             update={
                 "risk_level": context.risk_level,
@@ -137,6 +164,8 @@ class DeepSeekRetentionClient:
 
     @staticmethod
     def _build_user_prompt(context: CustomerRiskContext) -> str:
+        """把已确认客户事实和目标 JSON Schema 组成用户提示词。"""
+        # 将输入事实与目标 JSON Schema 一起发送，减少自由文本导致的解析失败。
         output_schema = json.dumps(
             RetentionAdvice.model_json_schema(),
             ensure_ascii=False,

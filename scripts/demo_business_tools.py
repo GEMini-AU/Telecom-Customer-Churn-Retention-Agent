@@ -1,4 +1,14 @@
-"""Directly call all business tools without an Agent or language model."""
+# ============================================================================
+# 文件职责：按真实业务顺序直接演示客户查询、预测、知识检索和优惠计算四个工具。
+# 主要调用方：用户手工运行 ``python scripts/demo_business_tools.py``。
+# 输入/输出：使用固定演示客户和问题；输出每个工具的 JSON 结果到控制台。
+# 不负责：不调用 Agent、不调用大模型、不写入人工确认数据库。
+# ============================================================================
+"""不经过 Agent 或大模型，顺序直调四个业务工具的命令行演示。
+
+运行：``python scripts/demo_business_tools.py``。用于验证真实 CSV、模型、RAG 和
+优惠规则各自可运行，且可观察每个工具的结构化输出。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +33,8 @@ from business_tools import (
 
 
 def main() -> None:
+    """查询固定演示客户，预测、检索、计算优惠，并逐段打印结果。"""
+    # 后续预测和优惠均依赖此次查询成功返回的经过校验的特征。
     lookup = CustomerLookupTool(
         PROJECT_ROOT / "telco_customer_churn.csv"
     ).run(CustomerLookupInput(customer_id="7590-VHVEG"))
@@ -39,6 +51,7 @@ def main() -> None:
     if not prediction.success or prediction.prediction is None:
         raise SystemExit("流失预测失败，停止优惠计算。")
 
+    # 政策检索与该客户无关；它只返回演示知识库的来源片段。
     retrieval = KnowledgeRetrievalTool(PROJECT_ROOT).run(
         KnowledgeSearchInput(question="高风险客户如何挽留？", top_k=2)
     )

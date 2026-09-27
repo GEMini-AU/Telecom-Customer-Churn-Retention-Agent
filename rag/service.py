@@ -1,4 +1,14 @@
-"""Independent retrieval and grounded-answer service."""
+# ============================================================================
+# 文件职责：RAG 总服务，协调知识文件检查、索引复用/增量更新、检索、拒答与回答生成。
+# 主要调用方：business_tools/knowledge_retrieval.py 和 scripts/query_rag.py。
+# 输入/输出：输入问题、检索参数、可选生成器；输出 SearchResult 列表或 RagAnswer。
+# 不负责：不查询客户、不预测流失、不计算优惠，也不决定 Agent 调用顺序。
+# ============================================================================
+"""独立可运行的演示 RAG 服务。
+
+调用方可直接使用本服务回答问题，也可由 ``KnowledgeRetrievalTool`` 只调用 ``retrieve``。
+它负责文档变化检测、向量库复用/增量更新、相似度检索、证据不足拒答与生成回退。
+"""
 
 from __future__ import annotations
 
@@ -34,7 +44,7 @@ DEMO_ANSWER_PREFIX = (
 
 
 class DemoTelecomRAG:
-    """Load, incrementally index, retrieve, and answer demo documents."""
+    """加载演示政策、维护本地索引、返回带来源的证据或受限回答。"""
 
     def __init__(
         self,
@@ -42,6 +52,8 @@ class DemoTelecomRAG:
         knowledge_dir: Path | None = None,
         index_path: Path | None = None,
     ) -> None:
+        """初始化项目内知识目录和索引路径；此时不读文件也不建立索引。"""
+        # 默认路径全部位于项目目录：知识文档与持久化索引均可脱离 Streamlit 独立运行。
         self.project_root = project_root.resolve()
         self.knowledge_dir = (
             knowledge_dir or self.project_root / "knowledge" / "demo_telecom"
@@ -54,7 +66,7 @@ class DemoTelecomRAG:
         self.last_update_report: IndexUpdateReport | None = None
 
     def ensure_index(self, force_rebuild: bool = False) -> LocalVectorStore:
-        """Reuse, incrementally update, or safely rebuild the local index."""
+        """复用、增量更新或完整重建本地索引，并返回可检索的存储对象。"""
 
         try:
             knowledge_hash = calculate_knowledge_hash(self.knowledge_dir)
@@ -67,6 +79,7 @@ class DemoTelecomRAG:
                 f"无法读取知识库文档：{type(error).__name__}"
             ) from error
 
+        # 强制重建、索引不存在、索引损坏分别走完整重建；正常更新优先走增量路径。
         if force_rebuild:
             return self._full_rebuild(
                 load_result,
@@ -90,6 +103,7 @@ class DemoTelecomRAG:
                 reason=f"index_load_failed:{type(error.__cause__ or error).__name__}",
             )
 
+        # 目录哈希未变化时直接复用持久化索引，不重新切分或向量化。
         if existing.knowledge_hash == knowledge_hash:
             self._store = existing
             self.last_update_report = IndexUpdateReport(
@@ -102,6 +116,8 @@ class DemoTelecomRAG:
             )
             return existing
 
+        # 比较当前文档清单与旧 manifest，识别新增、修改与删除的来源文件。
+        # 键为相对来源路径，值为当前唯一文档，便于与旧索引 manifest 做集合比较。
         current_by_source = {
             document.source_file: document
             for document in load_result.documents
@@ -169,8 +185,16 @@ class DemoTelecomRAG:
         top_k: int = 3,
         min_score: float = 0.10,
     ) -> list[SearchResult]:
+        """确保索引反映当前知识文件后，返回达到相似度门槛的证据片段。"""
+        # 每次检索前检查知识库是否被编辑，避免长期运行的页面使用过期内存索引。
         try:
-            store = self._store or self.ensure_index()
+            # 长时间运行的 Agent 可能跨越知识文件编辑，因此复用内存索引前重算来源哈希。
+            store = self._store
+            if (
+                store is None
+                or store.knowledge_hash != calculate_knowledge_hash(self.knowledge_dir)
+            ):
+                store = self.ensure_index()
             return store.search(question, top_k=top_k, min_score=min_score)
         except RagRetrievalError:
             raise
@@ -186,6 +210,8 @@ class DemoTelecomRAG:
         min_score: float = 0.10,
         generator: AnswerGenerator | None = None,
     ) -> RagAnswer:
+        """先检索后生成；无证据即拒答，生成器失败则回退到离线摘录。"""
+        # 先检索再生成：没有证据时直接拒答，生成器永远不能替代检索依据。
         try:
             evidence = self.retrieve(
                 question,
@@ -211,6 +237,7 @@ class DemoTelecomRAG:
                 status="insufficient_evidence",
             )
 
+        # 默认使用离线摘录式回答；可选生成器失败时自动回退，仍只基于同一批证据。
         answer_generator = generator or ExtractiveAnswerGenerator()
         status = "answered"
         error_type: str | None = None
@@ -241,6 +268,8 @@ class DemoTelecomRAG:
         knowledge_hash: str,
         reason: str,
     ) -> LocalVectorStore:
+        """完整切分、向量化并原子写入索引，同时记录本次更新报告。"""
+        # 完整重建同时更新磁盘索引、内存索引和可审查的更新报告。
         chunks = split_documents(load_result.documents)
         store = LocalVectorStore.build(
             documents=load_result.documents,

@@ -1,4 +1,14 @@
-"""Persistent local vector store with document-level incremental updates."""
+# ============================================================================
+# 文件职责：保存/加载本地向量索引，支持文档级增量更新和余弦相似度检索。
+# 主要调用方：rag/service.py；索引文件保存于 storage/rag/ 下。
+# 输入/输出：输入文档、知识片段或查询问题；输出 LocalVectorStore 或 SearchResult 列表。
+# 不负责：不加载 Markdown、不写业务政策、不生成最终自然语言回答。
+# ============================================================================
+"""可持久化、可增量更新的本地向量库。
+
+调用链：``DemoTelecomRAG`` 使用本类建库、保存、加载和检索。持久化文件保存
+HashingVectorizer、稀疏矩阵、文本片段和文档清单，禁止加载不受信任的 joblib 文件。
+"""
 
 from __future__ import annotations
 
@@ -21,13 +31,15 @@ from .models import (
     KnowledgeDocument,
     SearchResult,
 )
+from .query_normalization import expand_telecom_query
 
 
+# 变更持久化 payload 结构时应升级版本，防止旧索引被错误读取。
 INDEX_VERSION = 3
 
 
 class LocalVectorStore:
-    """Persist fixed-size embeddings, chunks, and a document manifest."""
+    """维护固定维度向量、知识片段和来源清单，并提供保存、加载与检索方法。"""
 
     def __init__(
         self,
@@ -38,6 +50,8 @@ class LocalVectorStore:
         document_manifest: dict[str, DocumentManifestEntry],
         duplicate_documents: list[DuplicateDocument],
     ) -> None:
+        """接收已构建的数据并立即验证矩阵行数、chunk 和 manifest 的一致性。"""
+        # CSR 稀疏矩阵适合“片段数 × 固定向量维度”的检索计算。
         self.vectorizer = vectorizer
         self.matrix = matrix.tocsr()
         self.chunks = chunks
@@ -54,9 +68,11 @@ class LocalVectorStore:
         knowledge_hash: str,
         duplicate_documents: list[DuplicateDocument] | None = None,
     ) -> "LocalVectorStore":
+        """为全部文档片段首次向量化，构造完整索引。"""
         if not chunks:
             raise RagIndexError("没有可用于建立向量索引的文本片段。")
 
+        # 对所有片段一次性向量化，并同时建立文档到 chunk 的清单。
         vectorizer = create_local_embedder()
         matrix = vectorizer.transform([chunk.text for chunk in chunks])
         return cls(
@@ -79,6 +95,8 @@ class LocalVectorStore:
         knowledge_hash: str,
         duplicate_documents: list[DuplicateDocument],
     ) -> "LocalVectorStore":
+        """复用未变化片段的旧向量，只向量化新增或修改来源的片段。"""
+        # 未变化文档保留旧向量；只为新增或修改文档重建片段与向量。
         excluded_sources = replaced_sources | deleted_sources
         retained_indices = [
             index
@@ -116,7 +134,10 @@ class LocalVectorStore:
         )
 
     def save(self, index_path: Path) -> None:
+        """把索引原子写入 ``index_path``，失败时清理临时文件并抛索引异常。"""
+        # 先写临时文件再原子替换，避免程序中断留下半写入的索引。
         index_path.parent.mkdir(parents=True, exist_ok=True)
+        # payload 只由可验证的项目数据构成；版本字段用于拒绝结构不兼容的旧索引。
         payload: dict[str, Any] = {
             "version": INDEX_VERSION,
             "knowledge_hash": self.knowledge_hash,
@@ -145,6 +166,7 @@ class LocalVectorStore:
 
     @classmethod
     def load(cls, index_path: Path) -> "LocalVectorStore":
+        """从受信任的 joblib 索引恢复对象，并验证版本和内部一致性。"""
         # joblib 基于 pickle，只能加载本项目自己生成且受信任的索引文件。
         try:
             payload = joblib.load(index_path)
@@ -183,6 +205,8 @@ class LocalVectorStore:
         top_k: int = 3,
         min_score: float = 0.10,
     ) -> list[SearchResult]:
+        """将问题向量与片段矩阵做余弦相似度排序，返回达到门槛的前 ``top_k`` 条。"""
+        # 查询和片段均经 L2 归一化；linear_kernel 在这里等价于余弦相似度。
         clean_question = question.strip()
         if not clean_question:
             raise ValueError("检索问题不能为空。")
@@ -192,13 +216,17 @@ class LocalVectorStore:
             raise ValueError("min_score 必须位于 0 到 1 之间。")
 
         try:
-            query_vector = self.vectorizer.transform([clean_question])
+            # 仅向量检索使用扩展表达；结果仍来自原政策片段，且必须达到原分数门槛。
+            query_vector = self.vectorizer.transform(
+                [expand_telecom_query(clean_question)]
+            )
             scores = linear_kernel(query_vector, self.matrix).ravel()
         except Exception as error:
             raise RagRetrievalError(
                 f"向量检索失败：{type(error).__name__}"
             ) from error
 
+        # 按分数倒序取前 top_k；低于 min_score 的片段不作为政策依据返回。
         ranked_indices = scores.argsort()[::-1]
         results: list[SearchResult] = []
         for index in ranked_indices:
@@ -222,6 +250,8 @@ class LocalVectorStore:
         return results
 
     def _validate_internal_state(self) -> None:
+        """检查矩阵、chunk 与 manifest 三者是否同步，防止使用损坏索引。"""
+        # 索引、片段和文档清单必须一一对应，否则拒绝使用损坏的持久化数据。
         if self.matrix.shape[0] != len(self.chunks):
             raise RagIndexError("向量行数与文本片段数量不一致。")
         chunk_ids = {chunk.chunk_id for chunk in self.chunks}
@@ -238,6 +268,7 @@ def _build_manifest(
     documents: list[KnowledgeDocument],
     chunks: list[KnowledgeChunk],
 ) -> dict[str, DocumentManifestEntry]:
+    """由当前文档和切片建立“来源文件 -> chunk_id 列表”的增量更新清单。"""
     chunk_ids_by_source: dict[str, list[str]] = {}
     for chunk in chunks:
         chunk_ids_by_source.setdefault(chunk.source_file, []).append(chunk.chunk_id)

@@ -1,4 +1,15 @@
-"""Transactional SQLite audit for human decisions on demo retention plans."""
+# ============================================================================
+# 文件职责：将人工确认/拒绝状态可靠写入本地 SQLite，并提供查询与 JSONL 导出。
+# 主要调用方：agent_app.py 的方案生成、确认按钮、拒绝按钮和历史记录区域。
+# 输入/输出：输入方案、审计 ID、人工决定；输出带状态的 SqliteDecisionRecord。
+# 不负责：不自动确认、不调用真实运营商系统，也不生成客户挽留方案。
+# ============================================================================
+"""演示挽留方案的 SQLite 人工确认审计。
+
+调用链：``agent_app.run_agent`` 先写入 pending 记录；确认/拒绝按钮调用
+``decide_pending_decision`` 原子更新状态；页面用 ``list_decision_records`` 展示历史。
+本模块只记录演示状态，不向真实运营商系统下发任何动作。
+"""
 
 from __future__ import annotations
 
@@ -17,15 +28,19 @@ from .audit import AuditRecord, PlanAuditSummary, calculate_plan_fingerprint
 from .schemas import RetentionPlan
 
 
+# 审计状态机：生成方案先待确认，之后只能确认执行或拒绝，不能自动执行。
 DecisionStatus = Literal["pending_confirmation", "confirmed_execution", "rejected"]
 Decision = Literal["confirmed", "rejected"]
 
 
 class DecisionConflictError(RuntimeError):
-    """The plan was already decided or its fingerprint changed."""
+    """方案已经决定，或页面方案指纹已改变时抛出，阻止错误覆盖。"""
 
 
 class SqliteDecisionRecord(BaseModel):
+    """从 SQLite 行解析出的审计记录，页面用其显示当前人工确认状态。"""
+
+    # 与表约束一致，禁止读取后混入未定义字段。
     model_config = ConfigDict(extra="forbid")
 
     audit_id: str
@@ -38,6 +53,7 @@ class SqliteDecisionRecord(BaseModel):
     plan_summary: PlanAuditSummary
 
 
+# 数据库层的 CHECK 约束再次保证状态、人工决定和决定时间三者一致。
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS retention_decisions (
     audit_id TEXT PRIMARY KEY,
@@ -60,6 +76,8 @@ CREATE TABLE IF NOT EXISTS retention_decisions (
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
+    """打开数据库、设置行字典访问和等待锁时间，并确保审计表存在。"""
+    # 每次连接都确保表结构存在，并设置 busy_timeout 以降低并发写入时的锁错误。
     connection = sqlite3.connect(db_path, timeout=5)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout = 5000")
@@ -68,6 +86,8 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def _summary(plan: RetentionPlan) -> PlanAuditSummary:
+    """从完整方案提取适合持久化和复核的最小摘要。"""
+    # 审计表保存可复核的业务摘要，不保存完整对话文本或全部客户原始字段。
     return PlanAuditSummary(
         risk_level=plan.risk_assessment.risk_level,
         churn_probability=plan.risk_assessment.churn_probability,
@@ -81,6 +101,7 @@ def _summary(plan: RetentionPlan) -> PlanAuditSummary:
 
 
 def _record(row: sqlite3.Row) -> SqliteDecisionRecord:
+    """将 SQLite 查询行转为有类型、会校验字段的 Pydantic 审计对象。"""
     return SqliteDecisionRecord(
         audit_id=row["audit_id"],
         created_at_utc=row["created_at_utc"],
@@ -99,14 +120,16 @@ def create_pending_decision(
     db_path: Path,
     plan: RetentionPlan,
 ) -> SqliteDecisionRecord:
-    """Create one pending record per exact plan, or return its existing state."""
+    """每份精确方案创建一条待确认记录；重复创建时返回原记录而不新增。"""
 
     db_path = db_path.resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    # 指纹代表方案内容；同一方案重复生成时 ON CONFLICT 会复用原记录，避免重复待办。
     fingerprint = calculate_plan_fingerprint(plan)
     created_at = datetime.now(timezone.utc).isoformat()
     with closing(_connect(db_path)) as connection:
         with connection:
+            # 立即开启写事务，避免两个点击同时创建或修改同一条审计记录。
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """INSERT INTO retention_decisions (
@@ -122,6 +145,7 @@ def create_pending_decision(
                     _summary(plan).model_dump_json(),
                 ),
             )
+            # 无论插入成功或方案已存在，都按指纹读回唯一的当前记录。
             row = connection.execute(
                 "SELECT * FROM retention_decisions WHERE plan_fingerprint = ?",
                 (fingerprint,),
@@ -136,11 +160,12 @@ def decide_pending_decision(
     plan: RetentionPlan,
     decision: Decision,
 ) -> SqliteDecisionRecord:
-    """Atomically finalize one pending plan; repeated same clicks are idempotent."""
+    """原子地确认或拒绝待确认方案；同一决定的重复点击可安全返回原记录。"""
 
     db_path = db_path.resolve()
     if not db_path.is_file():
         raise LookupError("审计数据库不存在，无法确认方案。")
+    # 确认与拒绝映射为最终状态；之后不会再回到 pending_confirmation。
     target_status = (
         "confirmed_execution" if decision == "confirmed" else "rejected"
     )
@@ -153,6 +178,7 @@ def decide_pending_decision(
             ).fetchone()
             if row is None:
                 raise LookupError("未找到待确认的方案审计记录。")
+            # 页面上的方案若已变化，禁止沿用旧审计记录做人工决定。
             if row["plan_fingerprint"] != calculate_plan_fingerprint(plan):
                 raise DecisionConflictError("方案内容已变化，请重新生成后确认。")
             if row["status"] != "pending_confirmation":
@@ -184,6 +210,8 @@ def list_decision_records(
 ) -> list[SqliteDecisionRecord]:
     """Return recent persisted decisions without creating a missing database."""
 
+    # 只读最近记录；数据库不存在时返回空列表而不是在页面侧创建空库。
+
     if not 1 <= limit <= 1000:
         raise ValueError("limit 必须位于 1 到 1000 之间。")
     db_path = db_path.resolve()
@@ -199,7 +227,7 @@ def list_decision_records(
 
 
 def export_decisions_jsonl(db_path: Path, export_path: Path) -> int:
-    """Export finalized SQLite decisions to the legacy JSONL record shape."""
+    """将已确认或已拒绝的 SQLite 记录导出为旧版 JSONL，并返回导出条数。"""
 
     db_path = db_path.resolve()
     if not db_path.is_file():
@@ -212,6 +240,7 @@ def export_decisions_jsonl(db_path: Path, export_path: Path) -> int:
         ).fetchall()
     export_path = export_path.resolve()
     export_path.parent.mkdir(parents=True, exist_ok=True)
+    # 先生成临时 JSONL，再原子替换目标文件，防止导出中断损坏原文件。
     temporary_path = export_path.with_name(f"{export_path.name}.{uuid4().hex}.tmp")
     try:
         with temporary_path.open("w", encoding="utf-8", newline="\n") as file:

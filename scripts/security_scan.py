@@ -1,4 +1,14 @@
-"""Scan project text files for leaked secrets, local paths, and RAG privacy risks."""
+# ============================================================================
+# 文件职责：扫描项目文本中的硬编码密钥、绝对路径和知识库客户 ID 风险。
+# 主要调用方：用户手工运行 ``python scripts/security_scan.py``，可附加 --history。
+# 输入/输出：输入项目文本与可选 Git 历史；输出不泄露密钥原文的 JSON 风险报告。
+# 不负责：不删除密钥、不修改 Git 历史，也不扫描 .venv 和持久化向量库。
+# ============================================================================
+"""扫描项目文本文件中的密钥、绝对路径和 RAG 隐私风险。
+
+运行：``python scripts/security_scan.py``；加 ``--history`` 会额外扫描 Git 历史。
+扫描结果只报告文件与行号，绝不打印疑似密钥原文。
+"""
 
 from __future__ import annotations
 
@@ -11,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 
+# 以脚本位置确定扫描边界，避免误扫用户电脑的其他目录。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SKIPPED_DIRECTORIES = {
     ".git",
@@ -61,6 +72,7 @@ PLACEHOLDER_MARKERS = (
 
 
 def _iter_text_files() -> list[Path]:
+    """遍历项目内允许扫描的文本文件，同时跳过依赖、缓存和持久化数据目录。"""
     files: list[Path] = []
     for path in PROJECT_ROOT.rglob("*"):
         if not path.is_file():
@@ -74,11 +86,13 @@ def _iter_text_files() -> list[Path]:
 
 
 def _is_placeholder(value: str) -> bool:
+    """判断密钥值是否只是示例占位符；示例不作为泄露告警。"""
     normalized = value.strip().lower()
     return not normalized or any(item in normalized for item in PLACEHOLDER_MARKERS)
 
 
 def _is_git_ignored(relative_path: str) -> bool:
+    """借助 Git 判断本地密钥文件是否被忽略；返回布尔值而不读取密钥。"""
     result = subprocess.run(
         ["git", "check-ignore", "-q", relative_path],
         cwd=PROJECT_ROOT,
@@ -89,12 +103,14 @@ def _is_git_ignored(relative_path: str) -> bool:
 
 
 def run_scan() -> dict[str, Any]:
+    """扫描当前工作区并返回机器可读报告，不修改任何被扫描文件。"""
     hardcoded_secrets: list[dict[str, Any]] = []
     absolute_paths: list[dict[str, Any]] = []
     knowledge_customer_ids: list[dict[str, Any]] = []
     local_secret_files: list[dict[str, Any]] = []
     scanned_files = 0
 
+    # 每个文件独立读取；不可解码或系统读取失败的文件直接跳过。
     for path in _iter_text_files():
         relative = path.relative_to(PROJECT_ROOT).as_posix()
         try:
@@ -119,6 +135,7 @@ def run_scan() -> dict[str, Any]:
                 }
             )
 
+        # 逐行定位问题位置，只把行号写入报告，不保留可能敏感的行内容。
         for line_number, line in enumerate(text.splitlines(), start=1):
             is_local_secret_file = relative in LOCAL_SECRET_PATHS
             assignment = SECRET_ASSIGNMENT.search(line)
@@ -172,7 +189,7 @@ def run_scan() -> dict[str, Any]:
 
 
 def scan_git_history() -> dict[str, Any]:
-    """Inspect tracked text blobs without printing any suspected secret value."""
+    """扫描 Git 历史中的受跟踪文本对象，仍不打印任何疑似密钥值。"""
 
     objects = subprocess.run(
         ["git", "rev-list", "--objects", "--all"],
@@ -185,6 +202,7 @@ def scan_git_history() -> dict[str, Any]:
     scanned_blobs = 0
     skipped_large_blobs = 0
     seen: set[str] = set()
+    # 同一 blob 可能被多个提交引用，使用 ``seen`` 避免重复扫描。
     for entry in objects.stdout.splitlines():
         object_id, separator, relative = entry.partition(" ")
         if not separator or not relative or object_id in seen:
@@ -243,6 +261,7 @@ def scan_git_history() -> dict[str, Any]:
 
 
 def main() -> None:
+    """解析可选历史扫描参数，打印 JSON 报告；发现风险时以退出码 1 结束。"""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--history", action="store_true", help="同时扫描Git历史文本对象"

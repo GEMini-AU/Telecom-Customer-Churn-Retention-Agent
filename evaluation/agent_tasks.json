@@ -53,5 +53,26 @@
       "search_retention_policy",
       "calculate_retention_offer"
     ]
+  },
+  {
+    "name": "独立测试集高风险客户",
+    "task": "请为 2754-SDJRD 评估流失风险，核对演示政策与优惠，并生成完整方案。",
+    "expected_risk_level": "高风险",
+    "expected_source": "独立测试集样例",
+    "expected_tools": ["get_customer_profile", "predict_churn_risk", "search_retention_policy", "calculate_retention_offer"]
+  },
+  {
+    "name": "独立测试集中风险客户",
+    "task": "为 0365-GXEZS 做一次政策有来源、优惠有规则的客户挽留分析。",
+    "expected_risk_level": "中风险",
+    "expected_source": "独立测试集样例",
+    "expected_tools": ["get_customer_profile", "predict_churn_risk", "search_retention_policy", "calculate_retention_offer"]
+  },
+  {
+    "name": "独立测试集低风险客户",
+    "task": "查询 4376-KFVRS，预测流失风险，检索政策并计算演示优惠。",
+    "expected_risk_level": "低风险",
+    "expected_source": "独立测试集样例",
+    "expected_tools": ["get_customer_profile", "predict_churn_risk", "search_retention_policy", "calculate_retention_offer"]
   }
 ]

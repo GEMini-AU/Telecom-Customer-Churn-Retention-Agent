@@ -1,4 +1,14 @@
-"""Query the independent demo telecom RAG from the command line."""
+# ============================================================================
+# 文件职责：从命令行独立检索演示知识库，并打印回答和每个命中的来源。
+# 主要调用方：用户手工运行 ``python scripts/query_rag.py "问题"``。
+# 输入/输出：输入问题、top_k、分数门槛；输出带 RAG 状态和来源的控制台文本。
+# 不负责：不读取客户资料、不计算流失风险，也不执行 Agent 工具编排。
+# ============================================================================
+"""命令行查询独立演示 RAG。
+
+默认用离线摘录式回答；``--use-deepseek`` 才会调用模型润色，且仍只能使用检索证据。
+运行：``python scripts/query_rag.py "高风险客户如何挽留？"``。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +27,8 @@ from rag.service import DemoTelecomRAG
 
 
 def main() -> None:
+    """解析问题与检索参数，构建索引、回答问题并逐条打印来源。"""
+    # argparse 把终端文本转换为可校验的命令行参数，不涉及 Streamlit 页面。
     parser = argparse.ArgumentParser()
     parser.add_argument("question", help="要检索的电信知识问题")
     parser.add_argument("--top-k", type=int, default=3)
@@ -31,6 +43,7 @@ def main() -> None:
 
     rag = DemoTelecomRAG(PROJECT_ROOT)
     rag.ensure_index(force_rebuild=args.rebuild)
+    # 未显式选择 DeepSeek 时保持 None，服务层会使用确定性的本地摘录生成器。
     generator = None
     if args.use_deepseek:
         try:

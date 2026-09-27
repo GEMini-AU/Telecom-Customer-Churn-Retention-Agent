@@ -1,4 +1,14 @@
-"""Append-only local audit records for human Agent decisions."""
+# ============================================================================
+# 文件职责：定义旧版 JSONL 审计记录格式，并支持追加人工确认/拒绝记录。
+# 主要调用方：SQLite 导出兼容流程和审计测试。
+# 输入/输出：输入 RetentionPlan 与人工决定；输出 AuditRecord 或 JSONL 文件行。
+# 不负责：当前页面不直接使用它落库；页面的主审计实现位于 sqlite_audit.py。
+# ============================================================================
+"""人工决定的旧版 JSONL 审计导出格式。
+
+当前页面实际使用 SQLite 审计；本文件仍为导出兼容格式和对应测试提供摘要、指纹与
+追加写入能力。它不执行方案，只记录“确认”或“拒绝”的人工决定。
+"""
 
 from __future__ import annotations
 
@@ -16,10 +26,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from .schemas import RetentionPlan
 
 
+# JSONL 是旧版导出格式；进程内写锁避免多个线程把两条记录写进同一行。
 _AUDIT_WRITE_LOCK = threading.Lock()
 
 
 class PlanAuditSummary(BaseModel):
+    """审计中保留的最小业务摘要，不保存完整对话或完整客户原始行。"""
+
+    # 审计结构固定，避免导出数据混入页面临时字段。
     model_config = ConfigDict(extra="forbid")
 
     risk_level: str
@@ -31,6 +45,7 @@ class PlanAuditSummary(BaseModel):
 
 
 class AuditRecord(BaseModel):
+    """一条已完成决定的 JSONL 记录，包含时间、客户、方案指纹和摘要。"""
     model_config = ConfigDict(extra="forbid")
 
     audit_id: str
@@ -44,6 +59,8 @@ class AuditRecord(BaseModel):
 
 
 def calculate_plan_fingerprint(plan: RetentionPlan) -> str:
+    """把完整方案序列化并计算 SHA-256，用于识别页面方案是否被替换。"""
+    # 对完整方案做 SHA-256，供 SQLite 审计层判断“当前页面方案是否仍是同一份内容”。
     canonical_json = plan.model_dump_json()
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
@@ -53,8 +70,9 @@ def append_decision_record(
     plan: RetentionPlan,
     decision: Literal["confirmed", "rejected"],
 ) -> AuditRecord:
-    """Write one durable JSONL decision after the human clicks a button."""
+    """在人点击确认/拒绝后追加一行耐久 JSONL 记录，并返回该记录。"""
 
+    # 同一政策文件可能命中多个片段，导出摘要时保留去重后的来源列表。
     sources = list(
         dict.fromkeys(item.source_file for item in plan.policy_evidence)
     )
@@ -81,11 +99,13 @@ def append_decision_record(
 
     audit_path = audit_path.resolve()
     audit_path.parent.mkdir(parents=True, exist_ok=True)
+    # 紧凑 JSON 使每条记录严格占一行，便于后续逐行读取与导出。
     serialized = json.dumps(
         record.model_dump(mode="json"),
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    # flush + fsync 尽量确保人工点击后的本地记录已真正落盘。
     with _AUDIT_WRITE_LOCK:
         with audit_path.open("a", encoding="utf-8", newline="\n") as file:
             file.write(f"{serialized}\n")

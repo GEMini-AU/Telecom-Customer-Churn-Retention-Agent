@@ -1,4 +1,14 @@
-"""Run the final offline acceptance suite against real project components."""
+# ============================================================================
+# 文件职责：运行项目最终离线验收案例，输出每项的实际验证结果。
+# 主要调用方：用户手工运行 ``python scripts/run_acceptance.py``，也被最终验收测试引用。
+# 输入/输出：输入 evaluation/final_acceptance_cases.json；输出每个案例通过/失败和退出码。
+# 不负责：不发起真实大模型请求，不修改生产审计库或正式向量库。
+# ============================================================================
+"""最终离线验收脚本。
+
+运行：``python scripts/run_acceptance.py``。它用真实 CSV、模型、RAG 和优惠规则，
+配合离线模型替身验证至少十五个端到端场景，不调用真实 DeepSeek。
+"""
 
 from __future__ import annotations
 
@@ -40,12 +50,16 @@ from tests.offline_agent_model import (
 
 
 class _BrokenRAG:
+    """故意失败的 RAG 替身，用于验收工具异常会被结构化返回。"""
     def retrieve(self, *_: object, **__: object) -> list[object]:
+        """模拟检索服务故障，供异常验收项调用。"""
         raise RuntimeError("验收用模拟检索异常")
 
 
 class AcceptanceContext:
+    """复用验收中真实工具实例和离线 Agent 结果，减少各用例重复初始化。"""
     def __init__(self) -> None:
+        """绑定正式项目文件；只缓存 Agent 结果，查询和预测仍按用例执行。"""
         self.lookup_tool = CustomerLookupTool(
             PROJECT_ROOT / "telco_customer_churn.csv"
         )
@@ -56,9 +70,11 @@ class AcceptanceContext:
         self._agent_result: Any | None = None
 
     def lookup(self, customer_id: str) -> Any:
+        """调用真实客户查询工具，返回其完整结构化结果。"""
         return self.lookup_tool.run(CustomerLookupInput(customer_id=customer_id))
 
     def predict(self, customer_id: str) -> Any:
+        """先查询再调用真实 Pipeline，确保预测输入与实际调用链一致。"""
         customer = self.lookup(customer_id)
         assert customer.success and customer.customer is not None
         return self.prediction_tool.run(
@@ -66,6 +82,7 @@ class AcceptanceContext:
         )
 
     def agent_result(self) -> Any:
+        """首次构造离线 Agent 运行完整链路，后续验收用例复用同一结果。"""
         if self._agent_result is None:
             agent = SingleRetentionAgent(
                 PROJECT_ROOT,
@@ -79,6 +96,7 @@ class AcceptanceContext:
 
 
 def _check_customer_found(context: AcceptanceContext) -> str:
+    """验收存在客户、19 个模型特征以及标签未泄露到输入中。"""
     result = context.lookup("7590-VHVEG")
     assert result.success and result.customer is not None
     assert len(result.customer.features.__class__.model_fields) == 19
@@ -87,6 +105,7 @@ def _check_customer_found(context: AcceptanceContext) -> str:
 
 
 def _check_customer_missing(context: AcceptanceContext) -> str:
+    """验收不存在客户时返回明确 ``CUSTOMER_NOT_FOUND`` 错误码。"""
     result = context.lookup("0000-AAAAA")
     assert not result.success and result.error is not None
     assert result.error.code == "CUSTOMER_NOT_FOUND"
@@ -98,6 +117,7 @@ def _check_risk(
     customer_id: str,
     expected_level: str,
 ) -> str:
+    """验收指定客户由真实预测工具得到预期的风险等级。"""
     result = context.predict(customer_id)
     assert result.success and result.prediction is not None
     assert result.prediction.risk_level == expected_level
@@ -108,6 +128,7 @@ def _check_risk(
 
 
 def _check_prediction_tool(context: AcceptanceContext) -> str:
+    """验收完整 Agent 调用记录中包含成功的流失预测工具。"""
     result = context.agent_result()
     assert result.success
     record = next(
@@ -118,6 +139,7 @@ def _check_prediction_tool(context: AcceptanceContext) -> str:
 
 
 def _check_policy(_: AcceptanceContext) -> str:
+    """验收 RAG 命中挽留政策文件，且结果带标题、来源和正文。"""
     result = KnowledgeRetrievalTool(PROJECT_ROOT).run(
         KnowledgeSearchInput(question="高风险客户的演示挽留政策是什么？")
     )
@@ -131,6 +153,7 @@ def _check_policy(_: AcceptanceContext) -> str:
 
 
 def _check_no_evidence(_: AcceptanceContext) -> str:
+    """验收无关问题不会伪造证据，而是返回空 evidence。"""
     result = KnowledgeRetrievalTool(PROJECT_ROOT).run(
         KnowledgeSearchInput(
             question="火星量子通信卫星的轨道参数是多少？"
@@ -147,6 +170,7 @@ def _check_offer(
     monthly_charges: Decimal,
     expected_code: str,
 ) -> str:
+    """验收月费刚好跨过 75 边界时选择不同的中风险优惠规则。"""
     result = context.offer_tool.run(
         OfferCalculationInput(
             risk_level="中风险",
@@ -159,6 +183,7 @@ def _check_offer(
 
 
 def _check_tool_error(_: AcceptanceContext) -> str:
+    """验收 RAG 工具异常会变成 ``KNOWLEDGE_RETRIEVAL_ERROR``。"""
     result = KnowledgeRetrievalTool(
         PROJECT_ROOT,
         rag_service=_BrokenRAG(),
@@ -173,6 +198,7 @@ def _check_audit(
     decision: Literal["confirmed", "rejected"],
     expected_status: str,
 ) -> str:
+    """在临时 SQLite 中验收人工确认或拒绝会持久化为预期状态。"""
     result = context.agent_result()
     assert result.success and result.plan is not None
     with tempfile.TemporaryDirectory(prefix="final-acceptance-audit-") as temp:
@@ -196,6 +222,7 @@ def _check_audit(
 
 
 def _check_agent_chain(context: AcceptanceContext) -> str:
+    """验收完整方案严格按查询、预测、检索、优惠顺序调用四个工具。"""
     result = context.agent_result()
     assert result.success and result.plan is not None
     actual = [item.tool_name for item in result.tool_calls]
@@ -211,6 +238,7 @@ def _check_agent_chain(context: AcceptanceContext) -> str:
 
 
 def _check_loop_limit(_: AcceptanceContext) -> str:
+    """验收模型反复请求工具时会触发最大调用次数安全上限。"""
     agent = SingleRetentionAgent(
         PROJECT_ROOT,
         settings=DeepSeekSettings(api_key="offline-acceptance"),
@@ -226,12 +254,14 @@ def _check_loop_limit(_: AcceptanceContext) -> str:
 
 
 def run_acceptance() -> list[dict[str, Any]]:
+    """读取验收清单，将案例 ID 映射到真实检查函数并收集通过/失败结果。"""
     manifest = json.loads(
         (
             PROJECT_ROOT / "evaluation" / "final_acceptance_cases.json"
         ).read_text(encoding="utf-8")
     )
     context = AcceptanceContext()
+    # JSON 清单中的 ID 必须和此处处理函数一一对应，防止漏跑用例。
     handlers: dict[str, Callable[[], str]] = {
         "AC-001": lambda: _check_customer_found(context),
         "AC-002": lambda: _check_customer_missing(context),
@@ -285,6 +315,7 @@ def run_acceptance() -> list[dict[str, Any]]:
 
 
 def main() -> None:
+    """打印每个验收项及汇总；只要有一项失败就返回退出码 1。"""
     results = run_acceptance()
     for result in results:
         status = "通过" if result["passed"] else "失败"

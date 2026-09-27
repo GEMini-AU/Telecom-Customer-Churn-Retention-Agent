@@ -1,4 +1,14 @@
-"""A bounded single-agent loop using only the registered business tools."""
+# ============================================================================
+# 文件职责：单 Agent 主编排器，管理“模型选工具 -> 工具执行 -> 最终方案校验”的完整循环。
+# 主要调用方：agent_app.py 和 scripts/run_agent.py。
+# 输入/输出：输入一位客户的自然语言任务；输出成功的 RetentionPlan 或结构化错误。
+# 不负责：不实现客户查询、预测、RAG 和优惠规则；这些由 registry.py 转交四个工具。
+# ============================================================================
+"""受限的单 Agent 编排主流程。
+
+调用链：``agent_app.py`` 或 ``scripts/run_agent.py`` 创建本类并调用 ``run``。
+本类让大模型选择四个白名单工具，但以本地状态和逐字段核验阻止模型编造事实。
+"""
 
 from __future__ import annotations
 
@@ -29,17 +39,19 @@ from .schemas import (
 )
 
 
+# 最终方案必须带固定演示声明，避免把项目演示政策误认为真实运营商决策。
 AGENT_DISCLAIMER = (
     "本方案由项目演示模型、演示政策和演示优惠规则生成，"
     "不是真实运营商政策或审批结果，执行前必须人工复核。"
 )
+# 从自然语言任务中提取数据集使用的 customerID；同时限制话术中不得出现未经工具确认的数字承诺。
 CUSTOMER_ID_PATTERN = re.compile(r"(?<![A-Z0-9])[0-9]{4}-[A-Z]{5}(?![A-Z0-9])")
 FORBIDDEN_SCRIPT_PATTERN = re.compile(r"[0-9０-９%％￥¥$]")
 FORBIDDEN_SCRIPT_CLAIMS = ("模型认定", "一定会", "保证挽留", "永久有效")
 
 
 class SingleRetentionAgent:
-    """One DeepSeek agent with an allow-list and a hard tool-call budget."""
+    """一个 DeepSeek Agent：有工具白名单、客户范围和最大调用次数三道边界。"""
 
     def __init__(
         self,
@@ -49,6 +61,8 @@ class SingleRetentionAgent:
         openai_client: Any | None = None,
         max_tool_calls: int = 8,
     ) -> None:
+        """创建工具注册表和模型客户端；只初始化，不发送模型请求。"""
+        # 调用次数在模型请求前受限，避免模型反复请求工具造成无限循环或额外费用。
         if not 1 <= max_tool_calls <= 20:
             raise ValueError("max_tool_calls 必须位于 1 到 20 之间。")
         self.project_root = project_root.resolve()
@@ -63,10 +77,13 @@ class SingleRetentionAgent:
         self.max_tool_calls = max_tool_calls
 
     def run(self, task: str) -> AgentRunResult:
+        """执行一位客户的自然语言任务，返回方案或可展示的结构化失败信息。"""
+        # 先校验任务范围；缺失或出现多个客户时不调用模型。
         clean_task = task.strip()
         if not clean_task:
             return _failure("TASK_EMPTY", "自然语言任务不能为空。")
 
+        # ``dict.fromkeys`` 在去重的同时保留文本中首次出现的客户编号顺序。
         customer_ids = list(dict.fromkeys(CUSTOMER_ID_PATTERN.findall(clean_task)))
         if not customer_ids:
             return _failure(
@@ -80,6 +97,7 @@ class SingleRetentionAgent:
             )
         requested_customer_id = customer_ids[0]
 
+        # state 保存工具返回的权威事实；messages 保存与模型往返的对话上下文。
         state = self.registry.create_state()
         records: list[ToolCallRecord] = []
         messages: list[dict[str, Any]] = [
@@ -87,6 +105,8 @@ class SingleRetentionAgent:
             {"role": "user", "content": clean_task},
         ]
 
+        # “工具调用上限”和“对话轮次上限”双重限制，防止工具调用与模型对话互相循环。
+        # 额外两轮仅留给“首次选择工具”和“工具完成后输出最终方案”。
         for _ in range(self.max_tool_calls + 2):
             try:
                 response = self._client.chat.completions.create(
@@ -111,8 +131,10 @@ class SingleRetentionAgent:
                     records,
                 )
             message = response.choices[0].message
+            # 兼容 SDK 可能给出 None 的情况，并统一为可遍历列表。
             tool_calls = list(getattr(message, "tool_calls", None) or [])
             if tool_calls:
+                # 先记录模型的工具请求，再逐个做参数、白名单和客户范围校验。
                 messages.append(_assistant_tool_message(message, tool_calls))
                 for tool_call in tool_calls:
                     if len(records) >= self.max_tool_calls:
@@ -140,6 +162,7 @@ class SingleRetentionAgent:
                             argument_error,
                             records,
                         )
+                    # 模型只能请求已注册的四个工具，其他名称一律拒绝。
                     if tool_name not in self.registry.allowed_tool_names:
                         records.append(
                             ToolCallRecord(
@@ -155,6 +178,7 @@ class SingleRetentionAgent:
                             f"模型请求了未注册工具 {tool_name}，已拒绝执行。",
                             records,
                         )
+                    # 除政策检索外，工具参数中的客户必须与用户任务中的客户一致。
                     if tool_name != SEARCH_RETENTION_POLICY:
                         if arguments.get("customer_id") != requested_customer_id:
                             records.append(
@@ -172,6 +196,7 @@ class SingleRetentionAgent:
                                 records,
                             )
 
+                    # 注册表负责调用真实工具，并把成功结果保存到共享状态。
                     execution = self.registry.execute(
                         tool_name,
                         arguments,
@@ -217,6 +242,7 @@ class SingleRetentionAgent:
                     "大模型既没有调用工具，也没有返回最终方案。",
                     records,
                 )
+            # 没有工具调用时，模型必须返回最终 JSON 方案；随后与工具状态逐字段核对。
             try:
                 plan = RetentionPlan.model_validate_json(content)
                 _verify_plan(plan, state, requested_customer_id)
@@ -239,6 +265,8 @@ class SingleRetentionAgent:
         )
 
     def _system_prompt(self) -> str:
+        """构造模型系统提示：工具依赖、禁止编造规则和最终 JSON 结构。"""
+        # 约束真实依赖，而非强迫相互独立的政策检索与预测按固定顺序执行。
         schema = json.dumps(
             RetentionPlan.model_json_schema(),
             ensure_ascii=False,
@@ -246,7 +274,9 @@ class SingleRetentionAgent:
         return (
             "你是客户流失预测与智能运营项目的单 Agent。"
             "你只能调用系统提供的四个工具，不得假设存在其他工具。"
-            "对于完整挽留方案，必须依次完成客户查询、流失预测、政策检索和优惠计算。"
+            "对于完整挽留方案，四类工具都必须在最终回答前至少成功调用一次。"
+            "必须先查询客户再预测流失，先预测流失再计算优惠；"
+            "政策检索可在预测前后进行，但最终方案必须引用已检索到的政策证据。"
             "客户信息、概率、风险因素必须逐字复制对应工具结果；"
             "政策引用必须复制检索结果中的 chunk_id、来源、标题、章节和完整片段；"
             "优惠对象必须逐字段复制计算工具结果。"
@@ -265,6 +295,8 @@ class SingleRetentionAgent:
 
 
 def _parse_arguments(raw_arguments: str) -> tuple[dict[str, Any], str | None]:
+    """把模型给出的字符串解析为 JSON 对象；失败时返回说明而不抛出。"""
+    # 工具参数来自模型文本，必须先解析为 JSON 对象再交给 Pydantic 校验。
     try:
         value = json.loads(raw_arguments or "{}")
     except json.JSONDecodeError as error:
@@ -278,6 +310,7 @@ def _assistant_tool_message(
     message: Any,
     tool_calls: list[Any],
 ) -> dict[str, Any]:
+    """把 SDK 的工具请求转成下一轮对话所需的纯字典格式。"""
     return {
         "role": "assistant",
         "content": getattr(message, "content", None) or "",
@@ -300,6 +333,8 @@ def _verify_plan(
     state: AgentToolState,
     customer_id: str,
 ) -> None:
+    """逐字段比对最终方案与本轮工具状态；任一不一致即抛 ``ValueError``。"""
+    # 最终方案不是“模型说了算”：客户、预测、政策和优惠必须逐项与工具结果一致。
     customer = state.customers.get(customer_id)
     prediction = state.predictions.get(customer_id)
     offer = state.offers.get(customer_id)
@@ -312,6 +347,7 @@ def _verify_plan(
     if offer is None:
         raise ValueError("缺少优惠计算工具结果。")
 
+    # 只允许最终方案展示查询工具明确返回的七项基本资料。
     expected_customer = {
         "customer_id": customer.customer_id,
         "tenure_months": customer.features.tenure,
@@ -341,6 +377,7 @@ def _verify_plan(
     if actual_risk.risk_factors != prediction.risk_factors:
         raise ValueError("主要风险因素与预测工具结果不一致。")
 
+    # 每条政策引用都必须来自本次检索结果，且不能伪造、改写或重复同一片段。
     seen_chunk_ids: set[str] = set()
     for citation in plan.policy_evidence:
         evidence = state.evidence.get(citation.chunk_id)
@@ -381,6 +418,7 @@ def _failure(
     message: str,
     records: list[ToolCallRecord] | None = None,
 ) -> AgentRunResult:
+    """把任意中断点统一包装为 ``success=False`` 的 Agent 结果。"""
     return AgentRunResult(
         success=False,
         error=AgentError(code=code, message=message),
